@@ -12,6 +12,8 @@ import google.generativeai as genai
 
 
 nlp = spacy.load("en_core_web_sm")
+nlp.max_length = 2000000  
+
 embedding_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 
 SUPABASE_URL = "https://mngoftqnimynaxmmfnng.supabase.co"
@@ -31,8 +33,16 @@ def clean_text(text):
     return text.strip()
 
 def split_into_sentences(text):
-    doc = nlp(text)
-    return [sent.text.strip() for sent in doc.sents]
+    
+    max_chunk_size = 900000 
+    sentences = []
+    
+    for i in range(0, len(text), max_chunk_size):
+        chunk = text[i:i+max_chunk_size]
+        doc = nlp(chunk)
+        sentences.extend([sent.text.strip() for sent in doc.sents])
+    
+    return sentences
 
 def chunk_text(sentences, chunk_size=300, chunk_overlap=100):
     text_splitter = RecursiveCharacterTextSplitter(
@@ -48,27 +58,44 @@ def extract_text(file_stream):
         full_text = " ".join([page.extract_text() or "" for page in reader.pages])
         cleaned_text = clean_text(full_text)
 
+        print(f"Cleaned text length: {len(cleaned_text)} characters")
+        
         sentences = split_into_sentences(cleaned_text)
         chunked_docs = chunk_text(sentences)
 
         return [doc.page_content for doc in chunked_docs]
 
     except Exception as e:
+        print(f"Error extracting text: {str(e)}")
         return {"error": str(e)}
 
 def store_embeddings_in_supabase(document_name, chunks):
     try:
-        embeddings = embedding_model.encode(chunks).tolist()
-
-        data_to_insert = [
-            {"title": document_name, "content": chunk, "embedding": embedding}
-            for chunk, embedding in zip(chunks, embeddings)
-        ]
-
-        response = supabase.table("documents").insert(data_to_insert).execute()
-        return response.data
+        batch_size = 100
+        all_data = []
+        
+        for i in range(0, len(chunks), batch_size):
+            batch_chunks = chunks[i:i+batch_size]
+            batch_embeddings = embedding_model.encode(batch_chunks).tolist()
+            
+            batch_data = [
+                {"title": document_name, "content": chunk, "embedding": embedding}
+                for chunk, embedding in zip(batch_chunks, batch_embeddings)
+            ]
+            all_data.extend(batch_data)
+        
+        insert_batch_size = 50
+        all_responses = []
+        
+        for i in range(0, len(all_data), insert_batch_size):
+            batch_data = all_data[i:i+insert_batch_size]
+            response = supabase.table("documents").insert(batch_data).execute()
+            all_responses.append(response.data)
+        
+        return all_responses
 
     except Exception as e:
+        print(f"Error storing embeddings: {str(e)}")
         return {"error": str(e)}
 
 @app.route("/upload", methods=["POST"])
@@ -134,10 +161,9 @@ def generate_answer():
         Format your response in a conversational and helpful way. Do not mention that you're using context or that you're an AI.
         """
         
-        # Generate response using Gemini
         response = model.generate_content(prompt)
         
-        # Process Gemini's response
+
         answer = response.text
         
         return jsonify({"answer": answer})
@@ -145,8 +171,6 @@ def generate_answer():
     except Exception as e:
         print(f"Error generating answer: {str(e)}")
         return jsonify({"error": str(e)}), 500
-
-
 
 
 if __name__ == "__main__":
