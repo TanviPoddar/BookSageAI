@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Send, Loader2, Upload, Book, FileText, MessageSquare, History, PlusCircle, X, Settings } from "lucide-react";
+import { Send, Loader2, Upload, Book, FileText, MessageSquare, History, PlusCircle, X, Settings,Mic } from "lucide-react";
 import supabase from "./supabase";
 
 // Embedding generation function
@@ -189,9 +189,51 @@ export default function BookSageAI() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [documents, setDocuments] = useState([]);
   const [chatHistory, setChatHistory] = useState([]);
+  const [isListening, setIsListening] = useState(false);
 
-  
   const messagesEndRef = useRef(null);
+  const recognitionRef = useRef(null);
+
+  useEffect(() => {
+    // Initialize speech recognition
+    if ('webkitSpeechRecognition' in window) {
+      const recognition = new window.webkitSpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = false;
+      recognition.lang = 'en-US';
+
+      recognition.onresult = (event) => {
+        const transcript = event.results[0][0].transcript;
+        setInput(transcript);
+        setIsListening(false);
+      };
+
+      recognition.onerror = (event) => {
+        console.error('Speech recognition error:', event.error);
+        setIsListening(false);
+      };
+
+      recognition.onend = () => {
+        setIsListening(false);
+      };
+
+      recognitionRef.current = recognition;
+    }
+  }, []);
+
+  const toggleListening = () => {
+    if (!recognitionRef.current) {
+      alert('Speech recognition is not supported in your browser');
+      return;
+    }
+
+    if (isListening) {
+      recognitionRef.current.stop();
+    } else {
+      recognitionRef.current.start();
+      setIsListening(true);
+    }
+  };
 
   //load chat history
 
@@ -317,13 +359,12 @@ export default function BookSageAI() {
       }
       
       // Update state with the document info from the server
-      setActiveDocument(data.document.name);
-      setActiveDocumentId(data.document.id);
-  
+      setActiveDocument(selectedFile.name);
+
       setMessages((prev) => [
         ...prev,
         {
-          text: `I've analyzed "${data.document.name}" and indexed its contents. What would you like to know about this document?`,
+          text: `I've analyzed "${selectedFile.name}" and indexed its contents. What would you like to know about this document?`,
           sender: "bot",
         },
       ]);
@@ -333,8 +374,7 @@ export default function BookSageAI() {
         setDocuments((prev) => [
           ...prev,
           { 
-            id: data.document.id, 
-            name: data.document.name, 
+            name: selectedFile.name, 
             date: new Date().toLocaleDateString() 
           },
         ]);
@@ -593,6 +633,17 @@ export default function BookSageAI() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
               />
+              <Button
+                type="button"
+                className={`${
+                  isListening 
+                    ? "bg-blue-600 hover:bg-blue-500" 
+                    : "bg-gray-700 hover:bg-gray-600"
+                } text-white rounded-lg transition-colors`}
+                onClick={toggleListening}
+              >
+                <Mic className="w-4 h-4" />
+              </Button>
               <Button 
                 type="submit"
                 disabled={!input.trim()}
@@ -608,11 +659,10 @@ export default function BookSageAI() {
           </Card>
           
           <div className="text-center text-xs opacity-50 pb-2">
-            BookSageAI © 2025
+            BookSageAI &copy; 2025
           </div>
         </div>
       </div>
     </div>
   );
 }
-
