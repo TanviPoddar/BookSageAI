@@ -2,8 +2,10 @@ import { useState, useRef, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Send, Loader2, Upload, Book, FileText, MessageSquare, History, PlusCircle, X, Settings,Mic } from "lucide-react";
+import { Send, Loader2, Upload, Book, FileText, MessageSquare, History, PlusCircle, X, Settings, Mic, Globe } from "lucide-react";
 import supabase from "./supabase";
+import DOMPurify from 'dompurify';
+
 
 // Embedding generation function
 async function generateEmbedding(text) {
@@ -43,6 +45,7 @@ async function performVectorSearch(embedding, query_text, documentId = null, lim
     }
     
     const { data, error } = await query;
+    console.log(data);
     
     if (error) {
       throw error;
@@ -55,7 +58,7 @@ async function performVectorSearch(embedding, query_text, documentId = null, lim
   }
 }
 
-async function generateGeminiAnswer(userQuery, contextData, documentName = null) {
+async function generateGeminiAnswer(userQuery, contextData, documentName = null, useWebSearch = false) {
   try {
     const response = await fetch("http://localhost:5000/generate-answer", {
       method: "POST",
@@ -65,7 +68,8 @@ async function generateGeminiAnswer(userQuery, contextData, documentName = null)
       body: JSON.stringify({ 
         query: userQuery,
         context: contextData,
-        documentName: documentName 
+        documentName: documentName,
+        useWebSearch: useWebSearch 
       }),
     });
     
@@ -190,6 +194,7 @@ export default function BookSageAI() {
   const [documents, setDocuments] = useState([]);
   const [chatHistory, setChatHistory] = useState([]);
   const [isListening, setIsListening] = useState(false);
+  const [useWebSearch, setUseWebSearch] = useState(false);
 
   const messagesEndRef = useRef(null);
   const recognitionRef = useRef(null);
@@ -285,21 +290,24 @@ export default function BookSageAI() {
         activeDocumentId
       );
       
-      // If no results found
-      if (!searchResults || searchResults.length === 0) {
+      // If no results found and web search is disabled
+      if ((!searchResults || searchResults.length === 0) && !useWebSearch) {
         setMessages(prev => [
           ...prev,
           { 
             text: activeDocument 
               ? `I couldn't find relevant information about "${input}" in the document "${activeDocument}".` 
-              : "I don't have enough information to answer that question. Please upload a document first.",
+              : "I don't have enough information to answer that question. Please upload a document or enable web search.",
             sender: "bot" 
           }
         ]);
       } else {
-        const contextData = searchResults.map(item => item.content).join('\n\n');
+        // Use empty context if no results but web search is enabled
+        const contextData = searchResults && searchResults.length > 0 
+          ? searchResults.map(item => item.content).join('\n\n')
+          : "";
         
-        const geminiAnswer = await generateGeminiAnswer(input, contextData, activeDocument);
+        const geminiAnswer = await generateGeminiAnswer(input, contextData, activeDocument, useWebSearch);
         
         setMessages(prev => [
           ...prev,
@@ -370,12 +378,13 @@ export default function BookSageAI() {
       ]);
   
       // Add to documents list if not already present
-      if (!documents.some((doc) => doc.id === data.document.id)) {
+      if (!documents.some((doc) => doc.id === data.document?.id)) {
         setDocuments((prev) => [
           ...prev,
           { 
             name: selectedFile.name, 
-            date: new Date().toLocaleDateString() 
+            date: new Date().toLocaleDateString(),
+            id: data.document?.id || Date.now().toString() // Fallback ID if server doesn't provide one
           },
         ]);
       }
@@ -419,6 +428,10 @@ export default function BookSageAI() {
     }
   };
 
+  const toggleWebSearch = () => {
+    setUseWebSearch(!useWebSearch);
+  };
+
   return (
     <div className="h-screen flex overflow-hidden bg-gray-900 text-gray-100">
       {/* Sidebar toggle for mobile */}
@@ -445,6 +458,19 @@ export default function BookSageAI() {
           >
             <PlusCircle className="w-4 h-4" />
             New Chat
+          </Button>
+          
+          {/* Web Search Toggle Button */}
+          <Button 
+            className={`w-full mb-4 flex items-center justify-center gap-2 ${
+              useWebSearch 
+                ? 'bg-green-600 hover:bg-green-500' 
+                : 'bg-gray-600 hover:bg-gray-500'
+            } text-white`}
+            onClick={toggleWebSearch}
+          >
+            <Globe className="w-4 h-4" />
+            Web Search: {useWebSearch ? "On" : "Off"}
           </Button>
         </div>
         
@@ -544,25 +570,36 @@ export default function BookSageAI() {
       
       {/* Main chat area */}
       <div className="flex-grow flex flex-col h-full relative">
-        {activeDocument && (
-          <div className="p-2 bg-blue-900/30 text-blue-200 border-blue-800 border-b flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <FileText className="w-4 h-4" />
-              <span className="text-sm font-medium">Active document: {activeDocument}</span>
+        {/* Header area with active document & web search status */}
+        <div className="flex flex-col">
+          {activeDocument && (
+            <div className="p-2 bg-blue-900/30 text-blue-200 border-blue-800 border-b flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <FileText className="w-4 h-4" />
+                <span className="text-sm font-medium">Active document: {activeDocument}</span>
+              </div>
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                className="h-7 rounded-full"
+                onClick={() => {
+                  setActiveDocument(null);
+                  setActiveDocumentId(null);
+                }}
+              >
+                <X className="w-4 h-4" />
+              </Button>
             </div>
-            <Button 
-              variant="ghost" 
-              size="sm" 
-              className="h-7 rounded-full"
-              onClick={() => {
-                setActiveDocument(null);
-                setActiveDocumentId(null);
-              }}
-            >
-              <X className="w-4 h-4" />
-            </Button>
-          </div>
-        )}
+          )}
+          {useWebSearch && (
+            <div className="p-2 bg-green-900/30 text-green-200 border-green-800 border-b flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Globe className="w-4 h-4" />
+                <span className="text-sm font-medium">Web search enabled</span>
+              </div>
+            </div>
+          )}
+        </div>
         
         <div className="w-full max-w-4xl mx-auto px-4 py-4 flex flex-col h-full">
           {/* Chat messages area */}
@@ -601,8 +638,10 @@ export default function BookSageAI() {
                           : "bg-gray-800 border border-gray-700 rounded-bl-none shadow-sm"
                       }`}
                     >
-                      {msg.text}
-                    </div>
+                      {msg.sender==='bot'?(
+                        <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(msg.text) }} />):
+                        (msg.text)}
+                      </div>
                   </div>
                 ))}
                 {loading && (
@@ -629,7 +668,13 @@ export default function BookSageAI() {
             >
               <Input
                 className="flex-grow bg-gray-700 border-gray-600 text-white placeholder:text-gray-400 rounded-lg"
-                placeholder={activeDocument ? "Ask about your document..." : "Upload a document or start chatting..."}
+                placeholder={
+                  activeDocument 
+                    ? "Ask about your document..." 
+                    : useWebSearch 
+                      ? "Ask any question using web search..."
+                      : "Upload a document or enable web search to start..."
+                }
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
               />

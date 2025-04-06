@@ -9,6 +9,8 @@ from sentence_transformers import SentenceTransformer
 from supabase import create_client, Client
 from google.generativeai import GenerativeModel
 import google.generativeai as genai
+import requests
+import markdown
 
 
 nlp = spacy.load("en_core_web_sm")
@@ -19,6 +21,7 @@ embedding_model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
 SUPABASE_URL = "https://mngoftqnimynaxmmfnng.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1uZ29mdHFuaW15bmF4bW1mbm5nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDA4MDYzMjMsImV4cCI6MjA1NjM4MjMyM30.ZSZHtdH_RcO6CMM3P-DKxv9O55-nfKdvHiGwP4LA_y8"
 GEMINI_API_KEY="AIzaSyDxRalitk2KQhHINRPROVqs94x10Hm6J74"
+SERPER_API_KEY="84cdbcf9137dde68f072886584ed2761a53cce5c"
 genai.configure(api_key=GEMINI_API_KEY)
 model = GenerativeModel('gemini-2.0-flash')
 
@@ -97,7 +100,49 @@ def store_embeddings_in_supabase(document_name, chunks):
     except Exception as e:
         print(f"Error storing embeddings: {str(e)}")
         return {"error": str(e)}
+def web_search(query):
+    url = "https://google.serper.dev/search"    
+    headers = {
+        "X-API-KEY": SERPER_API_KEY,
+        "Content-Type": "application/json"
+    }
+    data = {
+        "q": query,
+        "num": 10
+    }
 
+    response = requests.post(url, headers=headers, json=data)
+    result = response.json()
+    
+    contextual_data = []
+    
+    # Extract knowledge graph description if available
+    if "knowledgeGraph" in result and "description" in result["knowledgeGraph"]:
+        contextual_data.append(result["knowledgeGraph"]["description"])
+    
+    # Extract snippets from organic results
+    for res in result.get("organic", [])[:10]:
+        if "snippet" in res:
+            contextual_data.append(res["snippet"])
+    
+    # Extract answer boxes or featured snippets
+    if "answerBox" in result:
+        answer_box = result["answerBox"]
+        if "answer" in answer_box:
+            contextual_data.append(answer_box["answer"])
+        elif "snippet" in answer_box:
+            contextual_data.append(answer_box["snippet"])
+        elif "snippetHighlighted" in answer_box:
+            contextual_data.append(answer_box["snippetHighlighted"])
+    
+    # Extract related questions content
+    if "relatedQuestions" in result:
+        for question in result["relatedQuestions"]:
+            if "snippet" in question:
+                contextual_data.append(question["snippet"])
+    
+    # Join all contextual data with double newlines
+    return "\n\n".join(contextual_data)
 @app.route("/upload", methods=["POST"])
 def upload_file():
     if "file" not in request.files:
@@ -141,11 +186,18 @@ def generate_answer():
     query = data.get('query')
     context = data.get('context')
     document_name = data.get('documentName')
+    use_web=data.get('useWebSearch',False)
     
-    if not query or not context:
+    if not query or (not context and not use_web):
         return jsonify({"error": "Query and context are required"}), 400
     
     try:
+
+        web_context=""
+        if use_web:
+            web_context=web_search(query)
+        print(f"web_search: {web_context}")    
+
         prompt = f"""
         You are BookSageAI, an assistant that helps users understand documents.
         
@@ -153,29 +205,35 @@ def generate_answer():
         
         DOCUMENT: {document_name if document_name else 'Uploaded document'}
         
-        RELEVANT CONTEXT FROM THE DOCUMENT:
+        RELEVANT CONTEXT :
         {context}
+
+        {"\nWEB SEARCH RESULTS:\n" + web_context if web_context else ""}
         
         Based ONLY on the information provided in the context above, please answer the user's query.
         If the context doesn't contain information to answer the query, acknowledge that and suggest what might be relevant to look for.
         Format your response in a conversational and helpful way. Do not mention that you're using context or that you're an AI.
         """
+
         
         response = model.generate_content(prompt)
         
 
-        answer = response.text
+        answer = markdown.markdown(response.text)
         
         return jsonify({"answer": answer})
     
     except Exception as e:
         print(f"Error generating answer: {str(e)}")
         return jsonify({"error": str(e)}), 500
+    
+
+
+
 
 
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
-
 
 
 
